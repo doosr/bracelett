@@ -1,7 +1,6 @@
 import RPi.GPIO as GPIO
 import requests
 import smbus
-
 import qrcode
 import time
 import argparse
@@ -9,87 +8,105 @@ from heartrate_monitor import HeartRateMonitor
 import socketio
 import signal
 import sys
-#==========================================================
+import subprocess
+import os
+
+# Nettoyage initial des GPIO
+try:
+    GPIO.cleanup()
+except:
+    pass
+
+# Configuration GPIO avec warnings désactivés
+GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
 # Variables globales
-script_running = True
+script_running = False
+process = None
 
-def button_callback(channel):
-    global script_running
-    time.sleep(0.1)  # Debounce
-    if GPIO.input(16):  # Si le bouton est presse
-        script_running = False
-        print("Script arrte parre le bouton")
-        GPIO.cleanup()
-        sys.exit(0)
+# Configuration des pins
+GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # Bouton
+GPIO.setup(17, GPIO.OUT)  # LED Rouge
+GPIO.setup(27, GPIO.OUT)  # LED Verte
+GPIO.setup(22, GPIO.OUT)  # LED Bleue
 
-# Ajouter un detecteur d'evenement pour le bouton
-GPIO.add_event_detect(16, GPIO.RISING, callback=button_callback, bouncetime=300)
-
-def sigterm_handler(signum, frame):
-    print("Script arrete par le bouton")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, sigterm_handler)
-
-#==========================================================
-
-#Led RGB
+# Pins LED RGB
 redPin = 17
 greenPin = 27
 bluePin = 22
-#===========================================================
-GPIO.setwarnings(False)
-GPIO.setmode(GPIO.BCM) 
-GPIO.setup(redPin,GPIO.OUT)
-GPIO.setup(greenPin,GPIO.OUT)
-GPIO.setup(bluePin,GPIO.OUT)
-#===========================================================
-# Definition les couleur de la led
+
+def button_callback(channel):
+    global process, script_running
+    time.sleep(0.1)  # Debounce
+    if not GPIO.input(16):  # Si le bouton est pressé (logique inversée avec PUD_UP)
+        if not script_running:
+            # Démarrer le script
+            process = subprocess.Popen(["python3", "/home/pi/baby_monitor.py"])
+            script_running = True
+            print("Script démarré")
+        else:
+            # Arrêter le script
+            if process:
+                try:
+                    os.kill(process.pid, signal.SIGTERM)
+                    process.wait()
+                except:
+                    pass
+                script_running = False
+                print("Script arrêté")
+
+# Supprimer toute détection existante et ajouter la nouvelle
+try:
+    GPIO.remove_event_detect(16)
+except:
+    pass
+GPIO.add_event_detect(16, GPIO.FALLING, callback=button_callback, bouncetime=300)
+
+# Fonctions LED
 def turnOff():
-    GPIO.output(redPin,GPIO.LOW)
-    GPIO.output(greenPin,GPIO.LOW)
-    GPIO.output(bluePin,GPIO.LOW)
+    GPIO.output(redPin, GPIO.LOW)
+    GPIO.output(greenPin, GPIO.LOW)
+    GPIO.output(bluePin, GPIO.LOW)
     
 def white():
-    GPIO.output(redPin,GPIO.HIGH)
-    GPIO.output(greenPin,GPIO.HIGH)
-    GPIO.output(bluePin,GPIO.HIGH)
+    GPIO.output(redPin, GPIO.HIGH)
+    GPIO.output(greenPin, GPIO.HIGH)
+    GPIO.output(bluePin, GPIO.HIGH)
     
 def red():
-    GPIO.output(redPin,GPIO.HIGH)
-    GPIO.output(greenPin,GPIO.LOW)
-    GPIO.output(bluePin,GPIO.LOW)
+    GPIO.output(redPin, GPIO.HIGH)
+    GPIO.output(greenPin, GPIO.LOW)
+    GPIO.output(bluePin, GPIO.LOW)
 
 def green():
-    GPIO.output(redPin,GPIO.LOW)
-    GPIO.output(greenPin,GPIO.HIGH)
-    GPIO.output(bluePin,GPIO.LOW)
+    GPIO.output(redPin, GPIO.LOW)
+    GPIO.output(greenPin, GPIO.HIGH)
+    GPIO.output(bluePin, GPIO.LOW)
     
 def blue():
-    GPIO.output(redPin,GPIO.LOW)
-    GPIO.output(greenPin,GPIO.LOW)
-    GPIO.output(bluePin,GPIO.HIGH)
+    GPIO.output(redPin, GPIO.LOW)
+    GPIO.output(greenPin, GPIO.LOW)
+    GPIO.output(bluePin, GPIO.HIGH)
     
 def yellow():
-    GPIO.output(redPin,GPIO.HIGH)
-    GPIO.output(greenPin,GPIO.HIGH)
-    GPIO.output(bluePin,GPIO.LOW)
+    GPIO.output(redPin, GPIO.HIGH)
+    GPIO.output(greenPin, GPIO.HIGH)
+    GPIO.output(bluePin, GPIO.LOW)
     
 def purple():
-    GPIO.output(redPin,GPIO.HIGH)
-    GPIO.output(greenPin,GPIO.LOW)
-    GPIO.output(bluePin,GPIO.HIGH)
+    GPIO.output(redPin, GPIO.HIGH)
+    GPIO.output(greenPin, GPIO.LOW)
+    GPIO.output(bluePin, GPIO.HIGH)
     
 def lightBlue():
-    GPIO.output(redPin,GPIO.LOW)
-    GPIO.output(greenPin,GPIO.HIGH)
-    GPIO.output(bluePin,GPIO.HIGH)
+    GPIO.output(redPin, GPIO.LOW)
+    GPIO.output(greenPin, GPIO.HIGH)
+    GPIO.output(bluePin, GPIO.HIGH)
+
 def clignote():
     turnOff()
-    time.sleep(0.3) #1second
+    time.sleep(0.3)
     white()
     time.sleep(0.3)
     red()
@@ -105,201 +122,172 @@ def clignote():
     lightBlue()
     time.sleep(0.3)
     turnOff()
-#=================================================================
-# Configuration du capteur MLX90614
+
+# Configuration MLX90614
 bus = smbus.SMBus(1)  
 MLX90614_ADDR = 0x5A  
 
-# Adresse du serveur Socket.IO
-SOCKET_IO_SERVER_ADDRESS = "http://192.168.1.101:5000"
+# Configuration serveur
+SOCKET_IO_SERVER_ADDRESS = "http://192.168.1.106:5000"
 
-# Fonction pour lire la temperature du capteur MLX90614
+# Fonctions capteur et communication
 def read_temperature():
     try:
-         # Lecture de la tempÃƒÂ©rature ambiante (en degrÃƒÂ©s Celsius)
         ambient_temperature = bus.read_word_data(MLX90614_ADDR, 0x06)
         ambient_temperature = round(((ambient_temperature * 0.02) - 273.15), 2)
-        # Lecture de la temperature de l'objet (en degres Celsius)
         bebe_temperature = bus.read_word_data(MLX90614_ADDR, 0x07)
         bebe_temperature = round(((bebe_temperature * 0.02) - 273.15), 2)
-        return ambient_temperature,bebe_temperature
+        return ambient_temperature, bebe_temperature
     except Exception as e:
-        print("Erreur lors de la lecture du capteur MLX90614:", e)
-        return None
+        print("Erreur lecture température:", e)
+        return None, None
 
-# Fonction pour generer le code QR
 def generate_qr_code(baby_id):
     try:
         qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
         qr.add_data(baby_id)
         qr.make(fit=True)
-
         img = qr.make_image(fill_color="black", back_color="white")
         img.save("baby_qr_code.png")
-        img.show()
-        print("Code QR genere avec succes.")
+        print("Code QR généré")
     except Exception as e:
-        print("Erreur lors de la generation du code QR:", e)
+        print("Erreur génération QR:", e)
 
-# Initialiser la connexion Socket.IO
+# Socket.IO
 sio = socketio.Client()
 
-# Fonction pour se connecter au serveur Socket.IO
 @sio.event
 def connect():
-    print("Connecte au serveur Socket.IO")
+    print("Connecté au serveur Socket.IO")
 
-# Fonction pour envoyer les donnees de temperature au serveur
-def update_temperature(baby_id, temperature,ambient):
+def update_temperature(baby_id, temperature, ambient):
     if temperature is not None and ambient is not None:
         temperature += 2
         data = {
             "baby_id": baby_id,
             "bebe_temperature": temperature,
-            "ambient_temperature":ambient,
-            
+            "ambient_temperature": ambient,
         }
         sio.emit('updateTemperature', data)
-        print(f"Donnees de temperature {temperature} et temperature ambiant{ambient}envoyees au serveur pour le bebe ID: {baby_id}")
+        print(f"Température: {temperature}°C, Ambiante: {ambient}°C")
 
-# Fonction pour envoyer les dernieres donnees de BPM et SpO2 au serveur Socket.IO
-# Fonction pour filtrer les valeurs de BPM en dehors d'une plage raisonnable
 def filter_bpm(bpm, min_value=60, max_value=150):
-    """
-    Filtre les valeurs de BPM en dehors de la plage specifiee.
-    Renvoie la valeur BPM si elle est dans la plage, sinon renvoie None.
-    """
-    if min_value <= bpm <= max_value:
-        return bpm
-    else:
-        print(f"Valeur de BPM {bpm} en dehors de la plage attendue ({min_value}-{max_value}). Ignoree.")
-        return None
+    return bpm if min_value <= bpm <= max_value else None
 
-# Fonction pour envoyer les dernieres donnees de BPM et SpO2 au serveur Socket.IO
 def send_heartbeat_data(baby_id, last_bpm, last_spo2):
-    last_spo2 = int(last_spo2)  # Convert last_spo2 to an integer
-    filtered_bpm = filter_bpm(last_bpm)  # Filtrer la valeur de BPM
+    try:
+        last_spo2 = int(last_spo2)
+        filtered_bpm = filter_bpm(last_bpm)
+        if filtered_bpm is not None:
+            data = {
+                "baby_id": baby_id,
+                "last_spo2": last_spo2,
+                "last_bpm": filtered_bpm
+            }
+            sio.emit('updateHeartbeat', data)
+            print(f"BPM: {filtered_bpm}, SpO2: {last_spo2}%")
+    except Exception as e:
+        print(f"Erreur envoi données cardiaques: {e}")
 
-    if filtered_bpm is not None:
-        data = {
-            "baby_id": baby_id,
-            "last_spo2": last_spo2,
-            "last_bpm": filtered_bpm
-        }
-        sio.emit('updateHeartbeat', data)
-        print(f"Dernieres donnees de BPM: {filtered_bpm} et SpO2: {last_spo2} envoyees au serveur pour le bebe ID: {baby_id}")
-    else:
-        print(f"Donnees de BPM ignorees pour le bebe ID: {baby_id}")
-# Fonction pour recuperer l'ID du bebe e partir du serveur Node.js
 def get_baby_id_from_server():
     while script_running:
         try:
-            print("En attente de l'ID du bebe...")
+            print("Attente ID bébé...")
             clignote()
             response = requests.get('http://192.168.1.101:5000/babyId')
             if response.status_code == 200:
                 return response.json().get('babyId')
-            else:
-                print("echec de la recuperation de l'ID du bebe:", response.text)
-                red()
-                time.sleep(3)
-                turnOff()
-                time.sleep(5)  # Attendre 5 secondes avant de reessayer
-        except Exception as e:
-            print("Erreur lors de la recuperation de l'ID du bebe:", e)
+            print("Échec récupération ID")
             red()
             time.sleep(3)
             turnOff()
-            time.sleep(5)  # Attendre 5 secondes avant de reessayer
+            time.sleep(5)
+        except Exception as e:
+            print("Erreur récupération ID:", e)
+            red()
+            time.sleep(3)
+            turnOff()
+            time.sleep(5)
+    return None
 
-# Obtention de l'ID du bebe
-baby_id = get_baby_id_from_server()
-
-# Verification si l'ID du bebe existe
-while baby_id is None:
+def main():
+    global script_running
+    script_running = True
     
-    print("Aucun ID de bebe trouve.")
-    
+    try:
+        baby_id = get_baby_id_from_server()
+        if not baby_id:
+            print("Impossible d'obtenir l'ID bébé")
+            return
 
-    baby_id = get_baby_id_from_server()
+        print("ID bébé:", baby_id)
+        green()
+        time.sleep(3)
+        turnOff()
 
-print("ID de bebe existant trouve:", baby_id)
-green()
-time.sleep(3)
-turnOff()
+        sio.connect(SOCKET_IO_SERVER_ADDRESS)
+        generate_qr_code(baby_id)
 
-# Connexion au serveur Socket.IO
-sio.connect(SOCKET_IO_SERVER_ADDRESS)
+        parser = argparse.ArgumentParser(description="Lecture MAX30102")
+        parser.add_argument("-r", "--raw", action="store_true")
+        parser.add_argument("-t", "--time", type=int, default=30)
+        args = parser.parse_args()
 
-# Generation du code QR
-generate_qr_code(baby_id)
+        print('Démarrage capteur...')
+        hrm = HeartRateMonitor(print_raw=args.raw, print_result=(not args.raw))
+        hrm.start_sensor()
 
-# Initialisation du moniteur de frequence cardiaque
-parser = argparse.ArgumentParser(description="Read and print data from MAX30102")
-parser.add_argument("-r", "--raw", action="store_true", help="print raw data instead of calculation result")
-parser.add_argument("-t", "--time", type=int, default=30, help="duration in seconds to read from sensor, default 30")
-args = parser.parse_args()
+        temperature_timer = time.time()
+        heartbeat_timer = time.time()
 
-print('Demarrage du capteur...')
-hrm = HeartRateMonitor(print_raw=args.raw, print_result=(not args.raw))
-hrm.start_sensor()
-TEMPERATURE_INTERVAL = 1  # 30 minutes
-HEARTBEAT_INTERVAL = 1# 15 minutes
-# ecouter l'evenement pour mettre a jour les intervalles de lecture
-@sio.event
-def update_intervals_event(data):
-    global TEMPERATURE_INTERVAL, HEARTBEAT_INTERVAL
-    temperature_interval = data.get('temperature_interval')
-    heartbeat_interval = data.get('heartbeat_interval')
-    
-    if temperature_interval is not None:
-        TEMPERATURE_INTERVAL = temperature_interval
-    if heartbeat_interval is not None:
-        HEARTBEAT_INTERVAL = heartbeat_interval
-    
-    print(f"Intervalles de lecture mis a jour : Temperature = {TEMPERATURE_INTERVAL} secondes, BPM/SpO2 = {HEARTBEAT_INTERVAL} secondes")
+        while script_running:
+            current_time = time.time()
 
-try:
-    temperature_timer = time.time()
-    heartbeat_timer = time.time()
+            if current_time - temperature_timer >= 1:
+                ambient, temperature = read_temperature()
+                if ambient is not None:
+                    update_temperature(baby_id, temperature, ambient)
+                    temperature_timer = current_time
+                    lightBlue()
+                    time.sleep(0.1)
+                    turnOff()
 
-    while True:
-
-        # Lecture et envoi de la temperature toutes les TEMPERATURE_INTERVAL secondes
-        current_time = time.time()
-        if current_time - temperature_timer >= TEMPERATURE_INTERVAL:
-            ambient, temperature = read_temperature()
-            if temperature is not None and ambient is not None:
-                update_temperature(baby_id, temperature, ambient)
-                temperature_timer = current_time
-                lightBlue()
+            if current_time - heartbeat_timer >= 1:
+                send_heartbeat_data(baby_id, hrm.bpm, hrm.spo2)
+                heartbeat_timer = current_time
+                yellow()
+                time.sleep(0.1)
+                turnOff()
+                purple()
                 time.sleep(0.1)
                 turnOff()
 
-        # Lecture et envoi des donnees de SpO2 et BPM toutes les HEARTBEAT_INTERVAL secondes
-        if current_time - heartbeat_timer >= HEARTBEAT_INTERVAL:
-            last_bpm = hrm.bpm
-            last_spo2 = hrm.spo2
-            send_heartbeat_data(baby_id, last_bpm, last_spo2)
-            heartbeat_timer = current_time
-            yellow()
             time.sleep(0.1)
-            turnOff()
-            purple()
-            time.sleep(0.1)
-            turnOff()
 
-        # Delai pour eviter une consommation excessive de ressources
-        sio.sleep(0.1)  # Assurez-vous que la boucle s'arrete de maniere non bloquante pour traiter les evenements
-        sio.on('updateIntervals', update_intervals_event)  # Ajout du gestionnaire d'evenements pour la mise a jour des intervalles
+    except Exception as e:
+        print(f"Erreur: {e}")
+    finally:
+        script_running = False
+        try:
+            hrm.stop_sensor()
+            sio.disconnect()
+        except:
+            pass
+        lightBlue()
+        time.sleep(1)
+        turnOff()
+        GPIO.cleanup()
 
-except KeyboardInterrupt:
-    print('Interruption clavier detectee, arret du capteur...')
-    hrm.stop_sensor()
-    print('Capteur arrete!')
-    sio.disconnect()
-    lightBlue()
-    time.sleep(1 )
-    turnOff()
-    GPIO.cleanup()
-
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Arrêt demandé")
+    except Exception as e:
+        print(f"Erreur critique: {e}")
+    finally:
+        script_running = False
+        try:
+            GPIO.cleanup()
+        except:
+            pass
