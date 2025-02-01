@@ -10,14 +10,27 @@ import socketio
 import signal
 import sys
 #==========================================================
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
-def stop_script():
+# Variables globales
+script_running = True
+
+def button_callback(channel):
     global script_running
-    script_running = False
-    print('Arret du script...')
+    time.sleep(0.1)  # Debounce
+    if GPIO.input(16):  # Si le bouton est presse
+        script_running = False
+        print("Script arrte parre le bouton")
+        GPIO.cleanup()
+        sys.exit(0)
+
+# Ajouter un detecteur d'evenement pour le bouton
+GPIO.add_event_detect(16, GPIO.RISING, callback=button_callback, bouncetime=300)
 
 def sigterm_handler(signum, frame):
-    stop_script()
+    print("Script arrete par le bouton")
+    sys.exit(0)
 
 signal.signal(signal.SIGTERM, sigterm_handler)
 
@@ -96,7 +109,6 @@ def clignote():
 # Configuration du capteur MLX90614
 bus = smbus.SMBus(1)  
 MLX90614_ADDR = 0x5A  
-script_running = True
 
 # Adresse du serveur Socket.IO
 SOCKET_IO_SERVER_ADDRESS = "http://192.168.1.101:5000"
@@ -180,7 +192,6 @@ def send_heartbeat_data(baby_id, last_bpm, last_spo2):
         print(f"Donnees de BPM ignorees pour le bebe ID: {baby_id}")
 # Fonction pour recuperer l'ID du bebe e partir du serveur Node.js
 def get_baby_id_from_server():
-    global script_running
     while script_running:
         try:
             print("En attente de l'ID du bebe...")
@@ -252,7 +263,7 @@ try:
     temperature_timer = time.time()
     heartbeat_timer = time.time()
 
-    while script_running:
+    while True:
 
         # Lecture et envoi de la temperature toutes les TEMPERATURE_INTERVAL secondes
         current_time = time.time()
@@ -284,7 +295,6 @@ try:
 
 except KeyboardInterrupt:
     print('Interruption clavier detectee, arret du capteur...')
-    stop_script()
     hrm.stop_sensor()
     print('Capteur arrete!')
     sio.disconnect()
