@@ -7,7 +7,22 @@ import time
 import argparse
 from heartrate_monitor import HeartRateMonitor
 import socketio
+import signal
+import sys
 #==========================================================
+
+def stop_script():
+    global script_running
+    script_running = False
+    print('Arret du script...')
+
+def sigterm_handler(signum, frame):
+    stop_script()
+
+signal.signal(signal.SIGTERM, sigterm_handler)
+
+#==========================================================
+
 #Led RGB
 redPin = 17
 greenPin = 27
@@ -81,14 +96,15 @@ def clignote():
 # Configuration du capteur MLX90614
 bus = smbus.SMBus(1)  
 MLX90614_ADDR = 0x5A  
+script_running = True
 
 # Adresse du serveur Socket.IO
-SOCKET_IO_SERVER_ADDRESS = "http://192.168.1.106:5000"
+SOCKET_IO_SERVER_ADDRESS = "http://192.168.1.101:5000"
 
 # Fonction pour lire la temperature du capteur MLX90614
 def read_temperature():
     try:
-         # Lecture de la tempÃ©rature ambiante (en degrÃ©s Celsius)
+         # Lecture de la tempÃƒÂ©rature ambiante (en degrÃƒÂ©s Celsius)
         ambient_temperature = bus.read_word_data(MLX90614_ADDR, 0x06)
         ambient_temperature = round(((ambient_temperature * 0.02) - 273.15), 2)
         # Lecture de la temperature de l'objet (en degres Celsius)
@@ -124,6 +140,7 @@ def connect():
 # Fonction pour envoyer les donnees de temperature au serveur
 def update_temperature(baby_id, temperature,ambient):
     if temperature is not None and ambient is not None:
+        temperature += 2
         data = {
             "baby_id": baby_id,
             "bebe_temperature": temperature,
@@ -134,24 +151,41 @@ def update_temperature(baby_id, temperature,ambient):
         print(f"Donnees de temperature {temperature} et temperature ambiant{ambient}envoyees au serveur pour le bebe ID: {baby_id}")
 
 # Fonction pour envoyer les dernieres donnees de BPM et SpO2 au serveur Socket.IO
+# Fonction pour filtrer les valeurs de BPM en dehors d'une plage raisonnable
+def filter_bpm(bpm, min_value=60, max_value=150):
+    """
+    Filtre les valeurs de BPM en dehors de la plage specifiee.
+    Renvoie la valeur BPM si elle est dans la plage, sinon renvoie None.
+    """
+    if min_value <= bpm <= max_value:
+        return bpm
+    else:
+        print(f"Valeur de BPM {bpm} en dehors de la plage attendue ({min_value}-{max_value}). Ignoree.")
+        return None
+
+# Fonction pour envoyer les dernieres donnees de BPM et SpO2 au serveur Socket.IO
 def send_heartbeat_data(baby_id, last_bpm, last_spo2):
     last_spo2 = int(last_spo2)  # Convert last_spo2 to an integer
-    last_bpm = int(last_bpm)  # Convert last_spo2 to an integer
+    filtered_bpm = filter_bpm(last_bpm)  # Filtrer la valeur de BPM
 
-    data = {
-        "baby_id": baby_id,
-        "last_spo2": last_spo2,
-        "last_bpm": last_bpm
-    }
-    sio.emit('updateHeartbeat', data)
-    print(f"Dernieres donnees de BPM: {last_bpm} et SpO2: {last_spo2} envoyees au serveur pour le bebe ID: {baby_id}")
+    if filtered_bpm is not None:
+        data = {
+            "baby_id": baby_id,
+            "last_spo2": last_spo2,
+            "last_bpm": filtered_bpm
+        }
+        sio.emit('updateHeartbeat', data)
+        print(f"Dernieres donnees de BPM: {filtered_bpm} et SpO2: {last_spo2} envoyees au serveur pour le bebe ID: {baby_id}")
+    else:
+        print(f"Donnees de BPM ignorees pour le bebe ID: {baby_id}")
 # Fonction pour recuperer l'ID du bebe e partir du serveur Node.js
 def get_baby_id_from_server():
-    while True:
+    global script_running
+    while script_running:
         try:
             print("En attente de l'ID du bebe...")
             clignote()
-            response = requests.get('http://192.168.1.106:5000/babyId')
+            response = requests.get('http://192.168.1.101:5000/babyId')
             if response.status_code == 200:
                 return response.json().get('babyId')
             else:
@@ -199,7 +233,7 @@ print('Demarrage du capteur...')
 hrm = HeartRateMonitor(print_raw=args.raw, print_result=(not args.raw))
 hrm.start_sensor()
 TEMPERATURE_INTERVAL = 1  # 30 minutes
-HEARTBEAT_INTERVAL = 1  # 15 minutes
+HEARTBEAT_INTERVAL = 1# 15 minutes
 # ecouter l'evenement pour mettre a jour les intervalles de lecture
 @sio.event
 def update_intervals_event(data):
@@ -218,7 +252,7 @@ try:
     temperature_timer = time.time()
     heartbeat_timer = time.time()
 
-    while True:
+    while script_running:
 
         # Lecture et envoi de la temperature toutes les TEMPERATURE_INTERVAL secondes
         current_time = time.time()
@@ -250,9 +284,12 @@ try:
 
 except KeyboardInterrupt:
     print('Interruption clavier detectee, arret du capteur...')
+    stop_script()
     hrm.stop_sensor()
     print('Capteur arrete!')
     sio.disconnect()
     lightBlue()
     time.sleep(1 )
     turnOff()
+    GPIO.cleanup()
+
